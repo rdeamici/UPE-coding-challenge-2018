@@ -13,13 +13,13 @@ LEFT = {"action": "LEFT"}
 finished = False
 
 class Maze:
-    def __init__(self, rows,cols):
+    def __init__(self, rows,cols, curX, curY):
         self.rows = rows - 1
         self.cols = cols - 1
         self.maze = [[' ' for x in range(cols)] for y in range(rows)]
         self.moves = []
-        self.curX = 0
-        self.curY = 0
+        self.curX = curX
+        self.curY = curY
 
 # get token
 token = requests.post(sessionURL,UID).json()["token"]
@@ -29,14 +29,16 @@ accessToken = {"token": token}
 mazeState = requests.get(mazeURL,params=accessToken).json()
 totalLevels = mazeState['total_levels']
 
+# ensure the player is at the same spot on the API server as it is
+# in the recursive algorithm
 def go_back(maze):
     move = maze.moves.pop()
     if move == UP:
         requests.post(mazeURL, DOWN, params = accessToken)
-        maze.curY = maze.curY +1
+        maze.curY = maze.curY+1
     elif move == DOWN:
         requests.post(mazeURL, UP, params = accessToken)
-        maze.curY = maze.curY+1
+        maze.curY = maze.curY-1
     elif move == RIGHT:
         requests.post(mazeURL, LEFT, params = accessToken)
         maze.curX = maze.curX-1
@@ -44,7 +46,7 @@ def go_back(maze):
         requests.post(mazeURL, RIGHT, params = accessToken)
         maze.curX = maze.curX+1
 
-def checkMove(ans, maze, newY, newX, dir):
+def update_maze(ans, maze, newY, newX, dir):
     if ans == 'WALL':
         maze.maze[newY][newX] = 'W'
     elif ans == 'SUCCESS':
@@ -53,97 +55,118 @@ def checkMove(ans, maze, newY, newX, dir):
         maze.curX = newX
         maze.curY = newY
 
+#attempt to move in the direction indicated by dir
 def moveDirection (maze,dir):
     curX = maze.curX
     curY = maze.curY
     if dir == UP:
+        # check if UP will result in out of bounds
         if curY-1 < 0:
-            return 'OUT_OF_BOUNDS'
+            ans = 'OUT_OF_BOUNDS'
+        # check in UP is to a position we have already visited before
         elif maze.maze[curY-1][curX] != ' ':
-            return 'WALL'
+            ans = 'WALL'
         else:
+            # make move 
             ans = requests.post(mazeURL, dir, params=accessToken).json()['result']
-            checkMove(ans, maze,curY-1,curX, dir)
-            
+            # update maze
+            update_maze(ans, maze,curY-1,curX, dir)
     elif dir == RIGHT:
         if curX+1 > maze.cols:
-            return 'OUT_OF_BOUNDS'
+            ans = 'OUT_OF_BOUNDS'
         elif maze.maze[curY][curX+1] != ' ':
-            return 'WALL'
+            ans = 'WALL'
         else:
             ans = requests.post(mazeURL, dir, params=accessToken).json()['result']
-            checkMove(ans,maze,curY,curX+1, dir)
-
+            update_maze(ans,maze,curY,curX+1, dir)
     elif dir == DOWN:
         if curY+1 > maze.rows:
-            return 'OUT_OF_BOUNDS'
+            ans = 'OUT_OF_BOUNDS'
         elif maze.maze[curY+1][curX] != ' ':
-            return 'WALL'
+            ans = 'WALL'
         else:
             ans = requests.post(mazeURL, dir, params=accessToken).json()['result']
-            checkMove(ans,maze,curY+1,curX, dir)
-
+            update_maze(ans,maze,curY+1,curX, dir)
     elif dir == LEFT:
         if curX-1 < 0:
-            return 'OUT_OF_BOUNDS'
+            ans = 'OUT_OF_BOUNDS'
         elif maze.maze[curY][curX-1] != ' ':
-            return 'WALL'
+            ans = 'WALL'
         else:
             ans =  requests.post(mazeURL, dir, params=accessToken).json()['result']
-            checkMove(ans,maze,curY,curX-1, dir)
+            update_maze(ans,maze,curY,curX-1, dir)
     return ans
 
+def opposite(dir):
+    if dir == UP:
+        return DOWN
+    if dir == DOWN:
+        return UP
+    if dir == RIGHT:
+        return LEFT
+    if dir == LEFT:
+        return RIGHT
 
-def mazeSolverDFS (maze,result):  
-    #if len(moves) > 0:
-    #        for y in range(len(maze)):
-    #            print(maze[y])
-    #print('result of last attempted move = ',result)
+def make_move(maze, moves_list):
+    #loop thru each direction in moves_list looking for the END
+    while len(moves_list) > 0:
+        move = moves_list.pop()
+        result = moveDirection(maze,move)
+        if mazeSolverDFS(maze,result):
+            return True
+    if len(maze.moves) > 0:
+            go_back(maze)
+            return False
+    else:
+        return False
+
+# maze is the struct containing the current maze
+# result contains the result of the most recent attempted move
+def mazeSolverDFS (maze,result):
+    # we have reached the end of the maze
     if result == 'END':
         return True
     if result == 'WALL' or result == 'OUT_OF_BOUNDS':
         return False
     if result == 'SUCCESS':
-        result = moveDirection(maze,RIGHT)
-        if mazeSolverDFS(maze,result):
-            return True
-        result = moveDirection(maze,DOWN)
-        if mazeSolverDFS(maze, result):
-            return True
-        result = moveDirection(maze,LEFT)
-        if mazeSolverDFS(maze, result):
-            return True        
-        result = moveDirection(maze,UP)
-        if mazeSolverDFS(maze, result):
-            return True
-        if len(maze.moves) > 0:
-            go_back(maze)
-            return False
+        # if first time thru maze, need to check all 4 directions
+        if len(maze.moves) == 0:
+            return make_move(maze,[UP,RIGHT,DOWN,LEFT])
         else:
-            return False
+            # if we have made at least one move, no need to check the
+            # directions we just came from
+            last_move = maze.moves[-1]
+            moves_list = []
+            opp = opposite(last_move)
+            for i in [UP,RIGHT,DOWN,LEFT]:
+                # don't move in the direction you just came from
+                # don't add the most recent successful move (will be added later)
+                if last_move != i and  opp != i:
+                    moves_list.append(i)
+            # try the last successful direction first
+            moves_list.append(last_move)
+            #make_move contains the recursive call
+            return make_move(maze,moves_list)
 
 while not finished:
     mazeState = requests.get(mazeURL, params=accessToken).json()
     curLevel = mazeState['levels_completed']
-    
-    #make empty maze
-    cols = mazeState['maze_size'][0]
-    rows = mazeState['maze_size'][1]
-    maze = Maze(rows,cols)
-    
-    #set current position in maze
-    curX = mazeState['current_location'][0]
-    curY = mazeState['current_location'][1]
-    maze.maze[curY][curX] = '*'
-    print ('curLevel = ',curLevel)
-
-    #check to see if all mazes have been solved
-    if curLevel == totalLevels:
-        print('curLevel == ',curLevel)
-        print('totalLevels == ',totalLevels)
-        print('you finally did it!')
+    status = mazeState['status']
+ 
+    # check to see if we are done
+    if status == 'FINISHED':
+        print('YOU DID IT!')
         finished = True
     else:
-        #solve the current maze, moves holds all moves made so far
+        #make empty maze
+        cols = mazeState['maze_size'][0]
+        rows = mazeState['maze_size'][1]
+        curX = mazeState['current_location'][0]
+        curY = mazeState['current_location'][1]
+        maze = Maze(rows,cols, curX,curY)
+        #set current position in maze
+        maze.maze[curY][curX] = '*'
+
+        #solve the current maze
         if not mazeSolverDFS(maze,'SUCCESS'):
             print('wtf!?!?')
